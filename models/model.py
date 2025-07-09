@@ -12,13 +12,20 @@
 import math
 from typing import List, Optional, Tuple
 
-from flash_attn import flash_attn_varlen_func
-from flash_attn.bert_padding import index_first_axis, pad_input, unpad_input  # noqa
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
 from .components import RMSNorm
+
+try:
+    from flash_attn import flash_attn_varlen_func
+    from flash_attn.bert_padding import index_first_axis, pad_input, unpad_input  # noqa
+    _flash_attn_available = True
+except ImportError:
+    _flash_attn_available = False
+    flash_attn_varlen_func = None
+    index_first_axis = pad_input = unpad_input = None
 
 
 def modulate(x, scale):
@@ -26,7 +33,7 @@ def modulate(x, scale):
 
 
 #############################################################################
-#             Embedding Layers for Timesteps and Class Labels               #
+#                   Embedding Layers for Timesteps and Class Labels                   #
 #############################################################################
 
 
@@ -85,7 +92,7 @@ class TimestepEmbedder(nn.Module):
 
 
 #############################################################################
-#                               Core NextDiT Model                              #
+#                                    Core NextDiT Model                                     #
 #############################################################################
 
 
@@ -257,7 +264,7 @@ class JointAttention(nn.Module):
 
         softmax_scale = math.sqrt(1 / self.head_dim)
 
-        if dtype in [torch.float16, torch.bfloat16]:
+        if _flash_attn_available and dtype in [torch.float16, torch.bfloat16]:
             # begin var_len flash attn
             (
                 query_states,
@@ -802,8 +809,8 @@ class NextDiT(nn.Module):
             # This can be done by uncommenting the following line and commenting-out the line following that.
             eps, rest = model_out[:, : self.in_channels], model_out[:, self.in_channels :]
             cond_eps, uncond_eps = torch.split(eps, len(eps) // 2, dim=0)
-            half_eps = uncond_eps + cfg_scale * (cond_eps - uncond_eps)  
-            if float(renorm_cfg) > 0.0: 
+            half_eps = uncond_eps + cfg_scale * (cond_eps - uncond_eps)
+            if float(renorm_cfg) > 0.0:
                 ori_pos_norm = torch.linalg.vector_norm(cond_eps
                         , dim=tuple(range(1, len(cond_eps.shape))), keepdim=True
                 )
@@ -878,7 +885,7 @@ class NextDiT(nn.Module):
 
 
 #############################################################################
-#                                 NextDiT Configs                               #
+#                                    NextDiT Configs                                     #
 #############################################################################
 
 def NextDiT_2B_GQA_patch2_Adaln_Refiner(**kwargs):
