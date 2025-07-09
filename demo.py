@@ -28,16 +28,12 @@ except ImportError:
 
 
 class ModelFailure:
-    """用于在进程间传递模型失败信息的类。"""
     def __init__(self, message="模型在后台发生未知错误。"):
         self.message = message
         print(f"模型失败: {message}")
 
 
 def download_model_if_needed(model_id, base_cache_dir, hf_token=None):
-    """
-    检查本地是否存在模型，如果不存在则从Hugging Face Hub下载
-    """
     clean_path = os.path.join(base_cache_dir, model_id.replace("/", "--"))
 
     try:
@@ -70,9 +66,6 @@ def download_model_if_needed(model_id, base_cache_dir, hf_token=None):
 
 
 def encode_prompt(prompt_batch, text_encoder, tokenizer, proportion_empty_prompts, is_train=True):
-    """
-    对输入的提示词进行编码
-    """
     captions = []
     for caption in prompt_batch:
         if random.random() < proportion_empty_prompts:
@@ -106,9 +99,6 @@ def encode_prompt(prompt_batch, text_encoder, tokenizer, proportion_empty_prompt
 
 @torch.no_grad()
 def model_main(request_queue, response_queue, mp_barrier):
-    """
-    运行在独立进程中的主模型循环，负责加载和推理
-    """
     cache_dir = os.path.abspath('./cached_models')
     os.makedirs(cache_dir, exist_ok=True)
     os.environ['TOKENIZERS_PARALLELISM'] = 'false'
@@ -323,7 +313,6 @@ def model_main(request_queue, response_queue, mp_barrier):
 
 
 def find_free_port() -> int:
-    """寻找一个可用的端口。"""
     sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
     sock.bind(("", 0))
     port = sock.getsockname()[1]
@@ -332,7 +321,6 @@ def find_free_port() -> int:
 
 
 def find_ckpt_files(ckpt_dir="./ckpt"):
-    """在指定目录中寻找支持的模型文件。"""
     if not os.path.exists(ckpt_dir):
         os.makedirs(ckpt_dir)
         print(f"'{ckpt_dir}' 目录不存在，已自动创建。请将模型文件放入此目录中。")
@@ -350,11 +338,9 @@ def find_ckpt_files(ckpt_dir="./ckpt"):
     return ckpt_files
 
 def none_or_str(value):
-    """处理Gradio Dropdown可能返回 "None" 字符串的情况。"""
     return None if value == "None" else value
 
 def main():
-    """主函数，负责启动多进程和Gradio UI。"""
     parser = argparse.ArgumentParser()
     parser.add_argument("--port", type=int, default=7860, help="Web UI 运行的端口。")
     args = parser.parse_args()
@@ -373,7 +359,6 @@ def main():
     response_queue = mp.Queue()
     mp_barrier = mp.Barrier(num_gpus + 1)
 
-    # 启动模型子进程
     p = mp.Process(
         target=model_main,
         args=(request_queue, response_queue, mp_barrier),
@@ -390,12 +375,12 @@ def main():
 
         with gr.Row():
             with gr.Column(scale=1):
-                with gr.Accordion("1. 模型设置", open=True):
+                with gr.Accordion("模型设置", open=True):
                     ckpt = gr.Dropdown(choices=ckpt_list, value=ckpt_list[0] if ckpt_list else "无模型文件,请添加后重启", label="模型文件 (Checkpoint)", interactive=bool(ckpt_list))
                     precision = gr.Dropdown(["bf16", "fp16", "fp32"], value="bf16", label="运行精度 (Precision)")
-                    hf_token = gr.Textbox(label="Hugging Face Token", placeholder="用于访问私有模型的HF Token", type="password")
+                    hf_token = gr.Textbox(label="Hugging Face Token", placeholder="用于访问私有模型的HF Token")
 
-                with gr.Accordion("2. 生成核心参数", open=True):
+                with gr.Accordion("生成参数", open=True):
                     cap = gr.Textbox(lines=3, label="正向提示 (Prompt)", value="A majestic lion overlooking the savannah at sunset, photorealistic, 8k")
                     neg_cap = gr.Textbox(lines=2, label="反向提示 (Negative Prompt)", value="blurry, low quality, cartoon, watermark, text")
                     system_type = gr.Dropdown(choices=["You are an assistant designed to generate high-quality images with the highest degree of image-text alignment based on textual prompts.", ""], value="You are an assistant designed to generate high-quality images with the highest degree of image-text alignment based on textual prompts.", label="系统提示类型", max_choices=1)
@@ -409,18 +394,18 @@ def main():
                         cfg_scale = gr.Slider(1.0, 20.0, value=4.0, step=0.5, label="CFG Scale")
                         cfg_trunc = gr.Slider(0, 1, value=0.25, step=0.01, label="CFG Truncation")
 
-                with gr.Accordion("3. 显存优化 (CPU Offload)", open=False):
+                with gr.Accordion("显存优化 (CPU Offload)", open=False):
                     gr.Markdown("勾选以将对应模型的部分或全部移至CPU内存，可节省显存但会降低速度。**需要 `accelerate` 库。**")
-                    offload_text_encoder = gr.Checkbox(label="卸载文本编码器 (Text Encoder)", value=True)
+                    offload_text_encoder = gr.Checkbox(label="卸载文本编码器 (Text Encoder)", value=False)
                     offload_vae = gr.Checkbox(label="卸载 VAE", value=False)
                     offload_dit = gr.Checkbox(label="卸载主模型 (DiT)", value=False)
 
-                with gr.Accordion("4. 采样器设置 (高级)", open=False):
+                with gr.Accordion("采样器设置", open=False):
                     solver = gr.Dropdown(["euler", "midpoint", "rk4", "dpm"], value="midpoint", label="采样器 (Solver)")
                     t_shift = gr.Slider(1, 20, value=6, step=1, label="时间步移 (Time Shift)")
                     renorm_cfg = gr.Dropdown(["True", "False", "2.0"], value="True", label="CFG Renormalization")
 
-                with gr.Accordion("5. Transport & ODE 设置 (专家)", open=False):
+                with gr.Accordion("Transport & ODE 设置", open=False):
                     path_type = gr.Dropdown(["Linear", "GVP", "VP"], value="Linear", label="Path Type")
                     prediction = gr.Dropdown(["velocity", "score", "noise"], value="velocity", label="Prediction")
                     loss_weight = gr.Dropdown(["None", "velocity", "likelihood"], value="None", label="Loss Weight")
@@ -446,6 +431,7 @@ def main():
             inputs=[cap]
         )
 
+        # 绑定所有输入组件
         all_inputs = [
             ckpt, precision, hf_token, cap, neg_cap, system_type, width, height,
             num_sampling_steps, seed, cfg_scale, cfg_trunc,
@@ -465,15 +451,15 @@ def main():
         def on_submit(*args):
             if not ckpt_list:
                 raise gr.Error("错误：'./ckpt' 目录中没有模型文件。请添加模型文件并重启程序。")
-
+            
             settings = dict(zip(input_names, args))
             settings['loss_weight'] = none_or_str(settings['loss_weight'])
-
+            
             request_queue.put(settings)
             
             gr.Info("任务已提交，正在后台生成图像...")
             result = response_queue.get()
-
+            
             if isinstance(result, ModelFailure):
                 raise gr.Error(f"模型生成失败！\n错误详情: {result.message}")
             
