@@ -43,7 +43,7 @@ def download_model_if_needed(model_id, base_cache_dir, hf_token=None):
             local_files_only=True,
             local_dir_use_symlinks=False
         )
-        print(f"成功！从本地离线加载模型: {clean_path}")
+        print(f"成功从本地离线加载模型: {clean_path}")
 
     except Exception:
         print(f"本地未找到模型 '{model_id}' 或模型文件不完整。")
@@ -184,7 +184,7 @@ def model_main(request_queue, response_queue, mp_barrier):
 
                 cap_feat_dim = model_state["text_encoder"].config.hidden_size
 
-                print(f"正在创建 DiT 模型: {train_args.model} (强制CPU)")
+                print(f"正在创建 DiT 模型: {train_args.model}")
                 model_state["model"] = models.__dict__[train_args.model](
                     in_channels=16, qk_norm=train_args.qk_norm, cap_feat_dim=cap_feat_dim,
                 )
@@ -221,7 +221,7 @@ def model_main(request_queue, response_queue, mp_barrier):
             text_encoder.to("cuda")
             prompts_to_encode = [cap] + ([neg_cap] if neg_cap else [""])
             cap_feats, cap_mask = encode_prompt(prompts_to_encode, text_encoder, tokenizer, 0.0)
-            cap_feats = cap_feats.to("cuda", dtype=dtype) # 确保特征在GPU上
+            cap_feats = cap_feats.to("cuda", dtype=dtype)
             cap_mask = cap_mask.to("cuda")
             
             print("编码完成，正在从GPU卸载文本编码器...")
@@ -261,6 +261,20 @@ def model_main(request_queue, response_queue, mp_barrier):
 
             print(f"\n步骤 2/3: 正在将主模型(DiT)移至GPU并开始采样... (Steps: {settings.num_sampling_steps}, CFG: {settings.cfg_scale})")
             model.to("cuda", dtype=dtype)
+
+            if settings.enable_teacache:
+                print("TeaCache 加速已启用。正在为模型注入缓存控制属性...")
+                model.enable_teacache = True
+                model.cnt = 0 
+                model.cache = {} 
+                model.num_steps = settings.num_sampling_steps 
+                model.rel_l1_thresh = settings.teacache_l1_thresh
+                model.uncond_seq_len = None
+                print(f"  - TeaCache 步数: {model.num_steps}")
+                print(f"  - TeaCache L1 阈值: {model.rel_l1_thresh}")
+            else:
+                model.enable_teacache = False
+
             samples = None
             with torch.no_grad(), torch.autocast("cuda", dtype=dtype):
                 if settings.solver == "dpm":
@@ -278,7 +292,7 @@ def model_main(request_queue, response_queue, mp_barrier):
             torch.cuda.empty_cache()
 
             print("\n步骤 3/3: 正在将VAE移至GPU并解码图像...")
-            vae.to("cuda") # VAE用fp32保证质量
+            vae.to("cuda")
             vae_scale = 0.3611
             vae_shift = 0.1159
             
@@ -289,7 +303,6 @@ def model_main(request_queue, response_queue, mp_barrier):
             vae.to("cpu")
             torch.cuda.empty_cache()
 
-            # 后处理 (CPU上)
             samples = (samples.cpu().float() + 1.0) / 2.0
             samples.clamp_(0.0, 1.0)
             img = to_pil_image(samples[0, :])
@@ -303,7 +316,6 @@ def model_main(request_queue, response_queue, mp_barrier):
         
         finally:
             print("正在确保所有模型已移回CPU并清理最终缓存...")
-            # 确保即使发生错误，模型也被移回CPU
             if model is not None and isinstance(model, torch.nn.Module): model.to('cpu')
             if vae is not None and isinstance(vae, torch.nn.Module): vae.to('cpu')
             if text_encoder is not None and isinstance(text_encoder, torch.nn.Module): text_encoder.to('cpu')
@@ -400,6 +412,14 @@ def main():
                     t_shift = gr.Slider(1, 20, value=6, step=1, label="时间步移 (Time Shift)")
                     renorm_cfg = gr.Dropdown(["True", "False", "2.0"], value="True", label="CFG Renormalization")
 
+                with gr.Accordion("TeaCache 加速设置", open=False):
+                    enable_teacache = gr.Checkbox(value=False, label="启用 TeaCache 加速")
+                    teacache_l1_thresh = gr.Slider(
+                        minimum=0, maximum=20.0, value=6.0, step=0.1, 
+                        label="L1 变化阈值", 
+                        info="阈值越低，缓存命中率越低，出图质量越高但越慢；阈值越高，命中率越高，出图越快但可能影响细节。"
+                    )
+
                 with gr.Accordion("Transport & ODE 设置", open=False):
                     path_type = gr.Dropdown(["Linear", "GVP", "VP"], value="Linear", label="Path Type")
                     prediction = gr.Dropdown(["velocity", "score", "noise"], value="velocity", label="Prediction")
@@ -429,14 +449,18 @@ def main():
         all_inputs = [
             ckpt, precision, hf_token, cap, neg_cap, system_type, width, height,
             num_sampling_steps, seed, cfg_scale, cfg_trunc,
-            solver, t_shift, renorm_cfg, path_type, prediction, loss_weight,
+            solver, t_shift, renorm_cfg, 
+            enable_teacache, teacache_l1_thresh,
+            path_type, prediction, loss_weight,
             atol, rtol, reverse, sample_eps, train_eps
         ]
         
         input_names = [
             "ckpt", "precision", "hf_token", "cap", "neg_cap", "system_type", "width", "height",
             "num_sampling_steps", "seed", "cfg_scale", "cfg_trunc",
-            "solver", "t_shift", "renorm_cfg", "path_type", "prediction", "loss_weight",
+            "solver", "t_shift", "renorm_cfg", 
+            "enable_teacache", "teacache_l1_thresh",
+            "path_type", "prediction", "loss_weight",
             "atol", "rtol", "reverse", "sample_eps", "train_eps"
         ]
 
