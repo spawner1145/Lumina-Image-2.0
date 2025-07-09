@@ -26,7 +26,6 @@ try:
 except ImportError:
     cpu_offload = None
 
-
 class ModelFailure:
     def __init__(self, message="模型在后台发生未知错误。"):
         self.message = message
@@ -74,6 +73,8 @@ def encode_prompt(prompt_batch, text_encoder, tokenizer, proportion_empty_prompt
             captions.append(caption)
         elif isinstance(caption, (list, np.ndarray)):
             captions.append(random.choice(caption) if is_train else caption[0])
+    
+    device = text_encoder.device if hasattr(text_encoder, 'device') else "cuda"
 
     with torch.no_grad():
         text_inputs = tokenizer(
@@ -85,7 +86,6 @@ def encode_prompt(prompt_batch, text_encoder, tokenizer, proportion_empty_prompt
             return_tensors="pt",
         )
 
-        device = text_encoder.device if hasattr(text_encoder, 'device') else "cuda"
         text_input_ids = text_inputs.input_ids.to(device)
         prompt_masks = text_inputs.attention_mask.to(device)
 
@@ -124,13 +124,13 @@ def model_main(request_queue, response_queue, mp_barrier):
     model_state = {
         "model": None, "vae": None, "text_encoder": None, "tokenizer": None,
         "loaded_ckpt_path": None, "loaded_precision": None, "loaded_hf_token": None,
-        "offload_vae": False, "offload_text_encoder": False, "offload_dit": False,
     }
 
     mp_barrier.wait()
 
     while True:
         samples, z, cap_feats, cap_mask, model_kwargs = None, None, None, None, None
+        model, vae, text_encoder = None, None, None
         try:
             settings_dict = request_queue.get()
             settings = SimpleNamespace(**settings_dict)
@@ -140,23 +140,16 @@ def model_main(request_queue, response_queue, mp_barrier):
                 model_state["model"] is None or
                 model_state["loaded_ckpt_path"] != settings.ckpt or
                 model_state["loaded_precision"] != settings.precision or
-                model_state["loaded_hf_token"] != settings.hf_token or
-                model_state["offload_vae"] != settings.offload_vae or
-                model_state["offload_text_encoder"] != settings.offload_text_encoder or
-                model_state["offload_dit"] != settings.offload_dit
+                model_state["loaded_hf_token"] != settings.hf_token
             )
 
             if needs_reload:
-                print("检测到模型或Offload设置变更，正在重新加载模型...")
+                print("检测到模型或精度设置变更，正在重新加载所有模型到CPU...")
                 for k in ["model", "vae", "text_encoder", "tokenizer"]:
                     if model_state[k] is not None:
                         del model_state[k]
                 model_state.update({k: None for k in model_state})
                 torch.cuda.empty_cache()
-
-                if any([settings.offload_vae, settings.offload_text_encoder, settings.offload_dit]):
-                    if cpu_offload is None:
-                        raise ImportError("错误: 您选择启用CPU Offload，但 `accelerate` 库未安装。请运行 `pip install accelerate`。")
 
                 ckpt_path = settings.ckpt
                 ckpt_dir = os.path.dirname(ckpt_path)
@@ -168,25 +161,20 @@ def model_main(request_queue, response_queue, mp_barrier):
                 print("加载的模型参数:", json.dumps(train_args.__dict__, indent=2))
                 dtype = {"bf16": torch.bfloat16, "fp16": torch.float16, "fp32": torch.float32}[settings.precision]
 
-                print("正在准备依赖模型 (离线优先)...")
+                print("正在准备依赖模型...")
                 vae_model_id = "black-forest-labs/FLUX.1-dev"
                 text_encoder_model_id = "google/gemma-2-2b"
                 vae_local_path = download_model_if_needed(vae_model_id, cache_dir, settings.hf_token)
                 text_encoder_local_path = download_model_if_needed(text_encoder_model_id, cache_dir, settings.hf_token)
 
-                print(f"正在加载 VAE (Offload: {settings.offload_vae})...")
-                vae_device_map = "auto" if settings.offload_vae else "cuda"
+                print("正在加载 VAE...")
                 model_state["vae"] = AutoencoderKL.from_pretrained(
-                    vae_local_path, subfolder="vae", token=settings.hf_token,
-                    device_map=vae_device_map
-                )
-                if vae_device_map != "auto":
-                    model_state["vae"] = model_state["vae"].cuda()
+                    vae_local_path, subfolder="vae", token=settings.hf_token
+                ).to("cpu")
 
-                print(f"正在加载文本编码器 (Offload: {settings.offload_text_encoder})...")
-                encoder_device_map = "auto" if settings.offload_text_encoder else "cuda"
+                print("正在加载文本编码器...")
                 model_state["text_encoder"] = AutoModel.from_pretrained(
-                    text_encoder_local_path, torch_dtype=dtype, device_map=encoder_device_map, token=settings.hf_token
+                    text_encoder_local_path, torch_dtype=dtype, device_map="cpu", token=settings.hf_token
                 ).eval()
 
                 model_state["tokenizer"] = AutoTokenizer.from_pretrained(
@@ -196,33 +184,25 @@ def model_main(request_queue, response_queue, mp_barrier):
 
                 cap_feat_dim = model_state["text_encoder"].config.hidden_size
 
-                print(f"正在创建 DiT 模型: {train_args.model} (Offload: {settings.offload_dit})")
+                print(f"正在创建 DiT 模型: {train_args.model} (强制CPU)")
                 model_state["model"] = models.__dict__[train_args.model](
                     in_channels=16, qk_norm=train_args.qk_norm, cap_feat_dim=cap_feat_dim,
                 )
 
                 print(f"正在从 '{ckpt_path}' 加载模型权重...")
-                map_location = "cpu" if settings.offload_dit else "cuda"
+                map_location = "cpu"
                 if ckpt_path.endswith('.safetensors'):
                     state_dict = load_file(ckpt_path, device=map_location)
                 else:
                     state_dict = torch.load(ckpt_path, map_location=map_location, weights_only=False)
-
                 model_state["model"].load_state_dict(state_dict, strict=True)
-
-                if settings.offload_dit:
-                    print("正在为 DiT 模型启用 CPU Offload...")
-                    model_state["model"].eval()
-                    cpu_offload(model_state["model"], execution_device="cuda")
-                else:
-                    model_state["model"].eval().to("cuda", dtype=dtype)
+                model_state["model"].to("cpu").eval()
                 
                 model_state.update({
                     "loaded_ckpt_path": settings.ckpt, "loaded_precision": settings.precision,
-                    "loaded_hf_token": settings.hf_token, "offload_vae": settings.offload_vae,
-                    "offload_text_encoder": settings.offload_text_encoder, "offload_dit": settings.offload_dit
+                    "loaded_hf_token": settings.hf_token,
                 })
-                print("模型加载完成！")
+                print("所有模型已在CPU上准备就绪！")
             else:
                 print("模型设置未变更，将使用已缓存的模型。")
 
@@ -232,53 +212,57 @@ def model_main(request_queue, response_queue, mp_barrier):
             tokenizer = model_state["tokenizer"]
             dtype = {"bf16": torch.bfloat16, "fp16": torch.float16, "fp32": torch.float32}[settings.precision]
             
-            with torch.no_grad(), torch.autocast("cuda", dtype):
-                system_prompt = settings.system_type
-                cap = system_prompt + settings.cap
-                neg_cap = system_prompt + settings.neg_cap if settings.neg_cap else ""
-                print("接收到生成任务，参数:", json.dumps(metadata, indent=2))
-                
-                if settings.solver == "dpm":
-                    transport = create_transport("Linear", "velocity")
-                    sampler = Sampler(transport)
-                    sample_fn = sampler.sample_dpm(model.forward_with_cfg)
-                else:
-                    transport = create_transport(
-                        settings.path_type, settings.prediction, settings.loss_weight,
-                        settings.train_eps, settings.sample_eps,
-                    )
-                    sampler = Sampler(transport)
-                    sample_fn = sampler.sample_ode(
-                        sampling_method=settings.solver, num_steps=settings.num_sampling_steps,
-                        atol=settings.atol, rtol=settings.rtol, reverse=settings.reverse,
-                        time_shifting_factor=settings.t_shift,
-                    )
+            system_prompt = settings.system_type
+            cap = system_prompt + settings.cap
+            neg_cap = system_prompt + settings.neg_cap if settings.neg_cap else ""
+            print("接收到生成任务，参数:", json.dumps(metadata, indent=2))
+            
+            print("\n步骤 1/3: 正在将文本编码器移至GPU并编码提示...")
+            text_encoder.to("cuda")
+            prompts_to_encode = [cap] + ([neg_cap] if neg_cap else [""])
+            cap_feats, cap_mask = encode_prompt(prompts_to_encode, text_encoder, tokenizer, 0.0)
+            cap_feats = cap_feats.to("cuda", dtype=dtype) # 确保特征在GPU上
+            cap_mask = cap_mask.to("cuda")
+            
+            print("编码完成，正在从GPU卸载文本编码器...")
+            text_encoder.to("cpu")
+            torch.cuda.empty_cache()
 
-                latent_w, latent_h = settings.width // 8, settings.height // 8
-
-                ui_seed = int(settings.seed)
-                if ui_seed == -1:
-                    actual_seed = random.randint(0, 2**32 - 1)
-                    print(f"UI 种子为 -1，已生成随机种子: {actual_seed}")
-                else:
-                    actual_seed = ui_seed
-                torch.random.manual_seed(actual_seed)
-                metadata["seed"] = actual_seed
-
-                z = torch.randn([1, 16, latent_h, latent_w], device="cuda").to(dtype)
-                z = z.repeat(2, 1, 1, 1) 
-
-                prompts_to_encode = [cap] + ([neg_cap] if neg_cap else [""])
-                cap_feats, cap_mask = encode_prompt(prompts_to_encode, text_encoder, tokenizer, 0.0)
-                cap_mask = cap_mask.to(cap_feats.device)
-
-                model_kwargs = dict(
-                    cap_feats=cap_feats, cap_mask=cap_mask,
-                    cfg_scale=settings.cfg_scale, cfg_trunc=settings.cfg_trunc,
-                    renorm_cfg=(True if settings.renorm_cfg == 'True' else (False if settings.renorm_cfg == 'False' else float(settings.renorm_cfg))),
+            if settings.solver == "dpm":
+                transport = create_transport("Linear", "velocity")
+                sampler = Sampler(transport)
+                sample_fn = sampler.sample_dpm(model.forward_with_cfg)
+            else:
+                transport = create_transport(
+                    settings.path_type, settings.prediction, settings.loss_weight,
+                    settings.train_eps, settings.sample_eps,
+                )
+                sampler = Sampler(transport)
+                sample_fn = sampler.sample_ode(
+                    sampling_method=settings.solver, num_steps=settings.num_sampling_steps,
+                    atol=settings.atol, rtol=settings.rtol, reverse=settings.reverse,
+                    time_shifting_factor=settings.t_shift,
                 )
 
-                print(f"开始采样... Steps: {settings.num_sampling_steps}, CFG: {settings.cfg_scale}, Seed: {actual_seed}")
+            latent_w, latent_h = settings.width // 8, settings.height // 8
+            ui_seed = int(settings.seed)
+            actual_seed = random.randint(0, 2**32 - 1) if ui_seed == -1 else ui_seed
+            print(f"UI 种子为 {ui_seed}，实际使用种子: {actual_seed}")
+            torch.random.manual_seed(actual_seed)
+            metadata["seed"] = actual_seed
+
+            z = torch.randn([1, 16, latent_h, latent_w], device="cuda").to(dtype).repeat(2, 1, 1, 1)
+
+            model_kwargs = dict(
+                cap_feats=cap_feats, cap_mask=cap_mask,
+                cfg_scale=settings.cfg_scale, cfg_trunc=settings.cfg_trunc,
+                renorm_cfg=(True if settings.renorm_cfg == 'True' else (False if settings.renorm_cfg == 'False' else float(settings.renorm_cfg))),
+            )
+
+            print(f"\n步骤 2/3: 正在将主模型(DiT)移至GPU并开始采样... (Steps: {settings.num_sampling_steps}, CFG: {settings.cfg_scale})")
+            model.to("cuda", dtype=dtype)
+            samples = None
+            with torch.no_grad(), torch.autocast("cuda", dtype=dtype):
                 if settings.solver == "dpm":
                     samples = sample_fn(
                         z, steps=settings.num_sampling_steps, order=2,
@@ -287,28 +271,45 @@ def model_main(request_queue, response_queue, mp_barrier):
                     )
                 else:
                     samples = sample_fn(z, model.forward_with_cfg, **model_kwargs)[-1]
-                
-                samples = samples[:1]
+            samples = samples[:1]
 
-                vae_scale = 0.3611
-                vae_shift = 0.1159
-                vae_input_device = vae.device if hasattr(vae, 'device') else "cuda"
-                samples = vae.decode(samples.to(vae_input_device) / vae_scale + vae_shift).sample
-                
-                samples = (samples + 1.0) / 2.0
-                samples.clamp_(0.0, 1.0)
-                img = to_pil_image(samples[0, :].cpu().float())
-                
-                print("图像生成完成！")
-                response_queue.put((img, metadata))
+            print("采样完成，正在从GPU卸载主模型...")
+            model.to("cpu")
+            torch.cuda.empty_cache()
+
+            print("\n步骤 3/3: 正在将VAE移至GPU并解码图像...")
+            vae.to("cuda") # VAE用fp32保证质量
+            vae_scale = 0.3611
+            vae_shift = 0.1159
+            
+            with torch.no_grad():
+                samples = vae.decode(samples.to("cuda") / vae_scale + vae_shift).sample
+
+            print("解码完成，正在从GPU卸载VAE...")
+            vae.to("cpu")
+            torch.cuda.empty_cache()
+
+            # 后处理 (CPU上)
+            samples = (samples.cpu().float() + 1.0) / 2.0
+            samples.clamp_(0.0, 1.0)
+            img = to_pil_image(samples[0, :])
+            
+            print("\n图像生成完成！")
+            response_queue.put((img, metadata))
 
         except Exception as e:
             print(traceback.format_exc())
             response_queue.put(ModelFailure(traceback.format_exc()))
         
         finally:
-            print("正在删除中间变量并清理CUDA缓存...")
+            print("正在确保所有模型已移回CPU并清理最终缓存...")
+            # 确保即使发生错误，模型也被移回CPU
+            if model is not None and isinstance(model, torch.nn.Module): model.to('cpu')
+            if vae is not None and isinstance(vae, torch.nn.Module): vae.to('cpu')
+            if text_encoder is not None and isinstance(text_encoder, torch.nn.Module): text_encoder.to('cpu')
+            
             del samples, z, cap_feats, cap_mask, model_kwargs
+            del model, vae, text_encoder
             torch.cuda.empty_cache()
 
 
@@ -385,20 +386,14 @@ def main():
                     neg_cap = gr.Textbox(lines=2, label="反向提示 (Negative Prompt)", value="blurry, low quality, cartoon, watermark, text")
                     system_type = gr.Dropdown(choices=["You are an assistant designed to generate high-quality images with the highest degree of image-text alignment based on textual prompts.", ""], value="You are an assistant designed to generate high-quality images with the highest degree of image-text alignment based on textual prompts.", label="系统提示类型", max_choices=1)
                     with gr.Row():
-                        width = gr.Slider(256, 2048, value=1024, step=64, label="宽度 (Width)")
-                        height = gr.Slider(256, 2048, value=1024, step=64, label="高度 (Height)")
+                        width = gr.Slider(256, 4096, value=1024, step=64, label="宽度 (Width)")
+                        height = gr.Slider(256, 4096, value=1024, step=64, label="高度 (Height)")
                     with gr.Row():
                         num_sampling_steps = gr.Slider(1, 100, value=20, step=1, label="采样步数")
                         seed = gr.Slider(-1, 100000, value=-1, step=1, label="种子 (-1 代表随机)")
                     with gr.Row():
                         cfg_scale = gr.Slider(1.0, 20.0, value=4.0, step=0.5, label="CFG Scale")
                         cfg_trunc = gr.Slider(0, 1, value=0.25, step=0.01, label="CFG Truncation")
-
-                with gr.Accordion("显存优化 (CPU Offload)", open=False):
-                    gr.Markdown("勾选以将对应模型的部分或全部移至CPU内存，可节省显存但会降低速度。**需要 `accelerate` 库。**")
-                    offload_text_encoder = gr.Checkbox(label="卸载文本编码器 (Text Encoder)", value=False)
-                    offload_vae = gr.Checkbox(label="卸载 VAE", value=False)
-                    offload_dit = gr.Checkbox(label="卸载主模型 (DiT)", value=False)
 
                 with gr.Accordion("采样器设置", open=False):
                     solver = gr.Dropdown(["euler", "midpoint", "rk4", "dpm"], value="midpoint", label="采样器 (Solver)")
@@ -431,11 +426,9 @@ def main():
             inputs=[cap]
         )
 
-        # 绑定所有输入组件
         all_inputs = [
             ckpt, precision, hf_token, cap, neg_cap, system_type, width, height,
             num_sampling_steps, seed, cfg_scale, cfg_trunc,
-            offload_text_encoder, offload_vae, offload_dit,
             solver, t_shift, renorm_cfg, path_type, prediction, loss_weight,
             atol, rtol, reverse, sample_eps, train_eps
         ]
@@ -443,7 +436,6 @@ def main():
         input_names = [
             "ckpt", "precision", "hf_token", "cap", "neg_cap", "system_type", "width", "height",
             "num_sampling_steps", "seed", "cfg_scale", "cfg_trunc",
-            "offload_text_encoder", "offload_vae", "offload_dit",
             "solver", "t_shift", "renorm_cfg", "path_type", "prediction", "loss_weight",
             "atol", "rtol", "reverse", "sample_eps", "train_eps"
         ]
