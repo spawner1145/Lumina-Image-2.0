@@ -382,9 +382,9 @@ def main():
                     hf_token = gr.Textbox(label="Hugging Face Token", placeholder="用于访问私有模型的HF Token")
 
                 with gr.Accordion("生成参数", open=True):
-                    cap = gr.Textbox(lines=3, label="正向提示 (Prompt)", value="A majestic lion overlooking the savannah at sunset, photorealistic, 8k")
-                    neg_cap = gr.Textbox(lines=2, label="反向提示 (Negative Prompt)", value="blurry, low quality, cartoon, watermark, text")
-                    system_type = gr.Dropdown(choices=["You are an assistant designed to generate high-quality images with the highest degree of image-text alignment based on textual prompts.", ""], value="You are an assistant designed to generate high-quality images with the highest degree of image-text alignment based on textual prompts.", label="系统提示类型", max_choices=1)
+                    cap = gr.Textbox(lines=2, max_lines=6, label="正向提示 (Prompt)", value="A majestic lion overlooking the savannah at sunset, photorealistic, 8k")
+                    neg_cap = gr.Textbox(lines=2, max_lines=6, label="反向提示 (Negative Prompt)", value="blurry, low quality, cartoon, watermark, text")
+                    system_type = gr.Textbox(lines=2, max_lines=6, value="You are an assistant designed to generate high-quality images with the highest degree of image-text alignment based on textual prompts.", label="系统提示词 (System Prompt)")
                     with gr.Row():
                         width = gr.Slider(256, 4096, value=1024, step=64, label="宽度 (Width)")
                         height = gr.Slider(256, 4096, value=1024, step=64, label="高度 (Height)")
