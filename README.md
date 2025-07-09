@@ -5,6 +5,10 @@
 ![image](https://github.com/user-attachments/assets/d75fdd28-41a1-4fc9-ba80-e8121abff386)
 ![image](https://github.com/user-attachments/assets/e4c4bed3-8f4b-4717-b90e-e04dafbaaf67)
 
+dit的文件放到./ckpt目录下面
+![image](https://github.com/user-attachments/assets/f8734a8e-9087-420e-9ca0-83a70b82ac4f)
+注意那个model_args.pth别删
+
 <p align="center">
  <img src="./assets/lumina2-logo.png" width="40%"/>
  <br>
