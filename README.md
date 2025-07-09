@@ -1,4 +1,4 @@
-在cached_models文件夹的google--gemma-2-2b和black-forest-labs--FLUX.1-dev内，请去https://huggingface.co/google/gemma-2-2b/tree/main获取权限以后再把model-00001-of-00003.safetensors，model-00002-of-00003.safetensors，model-00003-of-00003.safetensors放到google--gemma-2-2b目录下，国内也可以在https://www.modelscope.cn/models/google/gemma-2-2b/files下载，会快不少
+在cached_models文件夹的`google--gemma-2-2b`和`black-forest-labs--FLUX.1-dev`内，请去`https://huggingface.co/google/gemma-2-2b/tree/main`获取权限以后再把`model-00001-of-00003.safetensors`，`model-00002-of-00003.safetensors`，`model-00003-of-00003.safetensors`放到`google--gemma-2-2b`目录下，国内也可以在`https://www.modelscope.cn/models/google/gemma-2-2b/files`下载，会快不少，flux那个vae文件夹也要下，具体看下面的图
 
 需要这些东西先下载好，cached_models文件夹如果没有就创一个
 ![image](https://github.com/user-attachments/assets/483e7095-0a4d-4872-8f01-5239a09a634c)
