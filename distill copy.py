@@ -332,7 +332,6 @@ def main(args):
     else:
         checkpointing_list = []
     
-    # 2. 现在，分别对三个结构相同的模型进行 FSDP 封装
     # FSDP Wrapping and EMA setup
     student_model = setup_fsdp_sync(student_model, args)
     student_model_ema = setup_fsdp_sync(student_model_ema, args)
@@ -509,11 +508,9 @@ def main(args):
                     
                     s_critic = fake_critic(xt, t, **model_kwargs)
     
-                    # --- 修改开始 ---
                     loss_c = torch.stack([
                         F.mse_loss(s_critic[i], s_student_detached[i].detach()) for i in range(len(s_critic))
                     ]).mean()
-                    # --- 修改结束 ---
                     
                     gan_loss_d = torch.tensor(0.0, device=device)
                     
@@ -592,4 +589,5 @@ if __name__ == "__main__":
     parser.add_argument("--num_distill_steps", type=int, default=1, help="Number of steps for the distilled student model.")
     
     args = parser.parse_args()
+
     main(args)
