@@ -88,6 +88,14 @@ class MyDataset(Dataset):
                         except json.decoder.JSONDecodeError as e:
                             logger.error(f"Error decoding the following jsonl line ({i}):\n{line.rstrip()}")
                             raise e
+            elif meta_ext == ".txt":
+                meta_l = []
+                with open(meta_path, 'r') as f:
+                    for line in f:
+                        path = line.strip()
+                        if path:
+                            meta_l.append({"path": path, "prompt": ""})
+
             else:
                 raise NotImplementedError(
                     f'Unknown meta file extension: "{meta_ext}". '
